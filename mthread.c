@@ -20,6 +20,8 @@ static struct mthread_struct *tasks[NR_MTHREAD] = {&init_thread, };
 static void mthread_entry();
 static void mthread_release(struct mthread_struct *);
 static void schedule();
+static void disable_timer();
+static void enable_timer();
 
 #define FIRST_TASK  tasks[0]
 #define LAST_TASK   tasks[NR_MTHREAD - 1]
@@ -31,7 +33,8 @@ gettimeofday(&tv, NULL); \
 tv.tv_sec * 1000 + tv.tv_usec / 1000; \
 })
 
-
+// 对外提供接口
+// ======================================================================
 int mthread_create(func_t entry, int argc, ...)
 {
     va_list ap;
@@ -39,6 +42,7 @@ int mthread_create(func_t entry, int argc, ...)
     int i, tid = 1;
     while(tid < NR_MTHREAD && tasks[tid])
         tid++;
+
     // can not find a free task
     if (tid >= NR_MTHREAD)
         return -1;
@@ -74,6 +78,41 @@ int mthread_create(func_t entry, int argc, ...)
     return tid;
 }
 
+void mthread_yield()
+{
+#ifdef MTHREAD_DEBUG
+    printf("mthread_yield: struct at %p, tid=%d\n", current, current->tid);
+#endif
+
+    current->status = MTHREAD_READY;
+    schedule();
+}
+
+void mthread_exit(u32_t return_code)
+{
+    // get return code from %EAX
+    current->return_code = return_code;
+    current->status = MTHREAD_ZOMBIE;
+
+#ifdef MTHREAD_DEBUG
+    printf("mthread_exit: struct at %p, tid=%d, return_code=%ld(0x%lx)\n", current, current->tid, current->return_code, current->return_code);
+#endif
+
+    schedule();
+}
+
+void mthread_sleep(int msec)
+{
+    current->alarm = CURRENT_TIME + msec;
+    current->status = MTHREAD_SLEEP;
+
+#ifdef MTHREAD_DEBUG
+    printf("mthread_sleep: struct at %p, tid=%d, sleep %dms(until %u)\n", current, current->tid, msec, current->alarm);
+#endif
+
+    schedule();
+}
+
 u32_t mthread_join(int tid)
 {
     if (tid < 1 || tid >= NR_MTHREAD)
@@ -99,40 +138,28 @@ u32_t mthread_join(int tid)
     return return_code;
 }
 
-void mthread_yield()
+int mthread_nice(int tid, int newpriority)
 {
-#ifdef MTHREAD_DEBUG
-    printf("mthread_yield: struct at %p, tid=%d\n", current, current->tid);
-#endif
-    current->status = MTHREAD_READY;
-    schedule();
+    struct mthread_struct **p;
+    if (current != tasks[0])
+        return -1;
+    if (newpriority < 0)
+        return -1;
+    if (tid < 0 || tid >= NR_MTHREAD)
+        return -1;
+    
+    p = &tasks[tid];
+    if (!*p)
+        return -1;
+
+    int oldpriority = (*p)->priority;
+    (*p)->priority = newpriority;
+    return oldpriority;
 }
+// ======================================================================
 
-void mthread_exit(u32_t return_code)
-{
-    // get return code from %EAX
-    current->return_code = return_code;
-    current->status = MTHREAD_ZOMBIE;
-
-#ifdef MTHREAD_DEBUG
-    printf("mthread_exit: struct at %p, tid=%d, return_code=%ld(0x%lx)\n", current, current->tid, current->return_code, current->return_code);
-#endif
-
-    schedule();
-}
-
-unsigned int mthread_sleep(int msec)
-{
-    unsigned int oldalarm = current->alarm;
-    current->alarm = CURRENT_TIME + msec;
-    current->status = MTHREAD_SLEEP;
-#ifdef MTHREAD_DEBUG
-    printf("mthread_sleep: struct at %p, tid=%d, sleep until %u\n", current, current->tid, current->alarm);
-#endif
-    schedule();
-    return oldalarm;
-}
-
+// 内部辅助函数
+// ======================================================================
 static void mthread_entry()
 {
     int i;
@@ -140,28 +167,20 @@ static void mthread_entry()
     // push arguments to stack
     for (i = current->argc - 1; i >= 0; --i)
         __asm__ __volatile__("pushl %0"::"r"(current->args[i]):);
+
 #ifdef MTHREAD_DEBUG
     printf("mthread_entry: struct at %p, tid=%d\n", current, current->tid);
     __asm__ __volatile__(
-        "leal 16(%%esp), %%esi \n\t"
+        "leal 0x10(%%esp), %%esi \n\t"
         "movl %%esi, %%esp \n\t"
         :::);
 #endif
+
     __asm__ __volatile__("call *%1":"=a"(return_code):"r"(current->entry):);
     mthread_exit(return_code);
-    /* can not enter there!!! */
-    for(;;);
-}
 
-static void mthread_showtasks()
-{
-    int i;
-    for (i = 0; i < NR_MTHREAD; i++) {
-        if (!tasks[i])
-            continue;
-        printf("thread %d: tid=%d\tpriority=%d\tcounter=%d\tstatus=%d\talarm=%u\n",
-            i, tasks[i]->tid, tasks[i]->priority, tasks[i]->counter, tasks[i]->status, tasks[i]->alarm);
-    }
+    /* unreachable */
+    for(;;);
 }
 
 static void mthread_release(struct mthread_struct *p)
@@ -171,6 +190,9 @@ static void mthread_release(struct mthread_struct *p)
     if (p->tid < 1 || p->tid >= NR_MTHREAD)
         return;
 
+#ifdef MTHREAD_DEBUG
+    printf("mthread_release: struct at %p, tid=%d\n", p, p->tid);
+#endif
     tasks[p->tid] = NULL;
     free(p->args);
 }
@@ -180,14 +202,8 @@ static void schedule(void)
     int i, next, c;
     unsigned int jiffies;
     struct mthread_struct **p;
-    jiffies = CURRENT_TIME;
-    for (p = &LAST_TASK; p >= &FIRST_TASK; --p)
-        if (*p) {
-            if ((*p)->alarm && (*p)->alarm < jiffies && (*p)->status == MTHREAD_SLEEP) {
-                (*p)->alarm = 0;
-                (*p)->status = MTHREAD_READY;
-            }
-        }
+
+    disable_timer();
 
     while(1) {
         c = 0, next = 0;
@@ -196,16 +212,17 @@ static void schedule(void)
         while (--i >= 0) {
             if (!*--p)
                 continue;
-
+            /* wake up one thread */
             if ((*p)->alarm && (*p)->alarm < jiffies && (*p)->status == MTHREAD_SLEEP) {
                 (*p)->alarm = 0;
                 (*p)->status = MTHREAD_READY;
             }
-
+            /* find a thread with maximum counter */
             if ((*p)->status == MTHREAD_READY && (*p)->counter > c)
                 c = (*p)->counter, next = i;
         }
         if (c)  break;
+        /* update all threads' cunter basing on its priority */
         for (p = &LAST_TASK; p >= &FIRST_TASK; p--)
             if (*p)
                 (*p)->counter = ((*p)->counter >> 1) + (*p)->priority;
@@ -218,8 +235,29 @@ static void schedule(void)
         struct mthread_struct *tmp = current;
         current = tasks[next];
         current->status = MTHREAD_RUNNING;
+        enable_timer();
         switch_context(&current->ctx, &tmp->ctx);
     }
+}
+// ======================================================================
+
+// ======================================================================
+__attribute__((always_inline))
+static void disable_timer()
+{
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGALRM); 
+    sigprocmask(SIG_BLOCK, &mask, NULL);
+}
+
+__attribute__((always_inline))
+static void enable_timer()
+{
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGALRM); 
+    sigprocmask(SIG_UNBLOCK, &mask, NULL);
 }
 
 static void do_timer(int sig)
@@ -231,9 +269,11 @@ static void do_timer(int sig)
         schedule();
     }
 }
+// ======================================================================
 
+// ======================================================================
 __attribute__((constructor))
-static int mthread_init(void)
+static void mthread_init(void)
 {
     // set timer to signal SIGALRM
     struct itimerval timer;
@@ -241,12 +281,26 @@ static int mthread_init(void)
     timer.it_value.tv_usec = 1000 * TIME_SLICE_MSEC;
     timer.it_interval.tv_sec = 0;
     timer.it_interval.tv_usec = 1000 * TIME_SLICE_MSEC;
-    if (setitimer(ITIMER_REAL, &timer, NULL)) {
 #ifdef MTHREAD_DEBUG
-        perror("mthread: set timer failed");
+    printf("mthread_init: setting timer, slice=%dms\n", TIME_SLICE_MSEC);
 #endif
-        return 1;
-    }
+    setitimer(ITIMER_REAL, &timer, NULL);
     signal(SIGALRM, do_timer);
-    return 0;
 }
+
+__attribute__((destructor))
+static void mthread_destory(void)
+{
+    /* release all mthread_structs */
+    struct mthread_struct **p;
+    disable_timer();
+#ifdef MTHREAD_DEBUG
+    printf("mthread_destory: cleaning up\n");
+#endif
+    for (p = &LAST_TASK; p > &FIRST_TASK; --p)
+        if (*p) {
+            mthread_release(*p);
+            free(*p);
+        }
+}
+// ======================================================================

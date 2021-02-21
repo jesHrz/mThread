@@ -53,20 +53,25 @@ int main()
 {
     int i, tid1, tid2, tid3, tid4;
     struct node tmp = {666, 'Z'};
+
+    mthread_nice(0, 1000);
+
     tid1 = mthread_create((func_t)func1, 1, 0xabcd);
     tid2 = mthread_create((func_t)func2, 1, &tid1);
     tid3 = mthread_create((func_t)func3, 1, &tmp);
     tid4 = mthread_create((func_t)func4, 0);
 
+    mthread_nice(tid4, 1);
+
     for (i = 0; i < 5; ++i) {
         printf("main: ---- %d ----\n", i);
-        mthread_sleep(1000);
+        mthread_sleep(100);
     }
 
     mthread_join(tid1);
-    printf("main: func2(arg=%p)=%ld\n", &tid1, mthread_join(tid2));
-    printf("main: func3()=%lx\n", mthread_join(tid3));
-    printf("main: func4()=%ld\n", mthread_join(tid4));
+    // printf("main: func2(arg=%p)=%ld\n", &tid1, mthread_join(tid2));
+    // printf("main: func3()=%lx\n", mthread_join(tid3));
+    // printf("main: func4()=%ld\n", mthread_join(tid4));
 
     printf("main done\n");
     return 0;

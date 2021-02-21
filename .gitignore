@@ -4,3 +4,5 @@
 *.a
 *.so
 *.so.1
+examples/mthread_test
+context/examples/context_test

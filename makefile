@@ -2,7 +2,7 @@ CC = gcc
 LD = gcc
 AR = ar
 LDFLAGS = -L. -lmthread -Lcontext -lcontext -static 
-CFLAGS  = -m32 -g -O2 -Wall -I. -Icontext/include # -DMTHREAD_DEBUG
+CFLAGS  = -m32 -g -O2 -Wall -I. -Icontext/include -DMTHREAD_DEBUG
 
 C_FILES 		= $(wildcard *.c)
 HEADER_FILES 	= $(wildcard *.h)
@@ -43,6 +43,6 @@ context/${LIBCONTEXT_SONAME}:
 	(cd context; make ${LIBCONTEXT_SONAME})
 
 clean:
-	rm -f ${LIBMTHREAD_STATIC_NAME} ${LIBMTHREAD_NAME} ${OBJ_FILES} ${EXAMPLE_FILE}
+	rm -f ${LIBMTHREAD_STATIC_NAME} ${LIBMTHREAD_NAME} ${LIBMTHREAD_SONAME} ${OBJ_FILES} ${EXAMPLE_FILE}
 	# (cd context; make clean)
 	

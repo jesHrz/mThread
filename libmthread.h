@@ -37,8 +37,9 @@ struct mthread_struct {
 int mthread_create(func_t entry, int argc, ...);
 void mthread_yield();
 void mthread_exit();
-unsigned int mthread_sleep(int msec);
+void mthread_sleep(int msec);
 u32_t mthread_join(int tid);
+int mthread_nice(int tid, int newpriority);
 
 
 #endif //__THREAD_H_
